@@ -1,6 +1,6 @@
 import os
 from os import makedirs
-from os.path import splitext, basename, join, isdir, dirname
+from os.path import splitext, basename, join, isdir
 import sys
 import zipfile
 from subprocess import call
@@ -160,30 +160,6 @@ def make_sync_results(run_name):
     return sync_results
 
 
-def download_dataset(dataset_path):
-    src_path = join(s3_datasets_path, dataset_path)
-    dst_path = join(datasets_path, dataset_path)
-    s3_cp(src_path, dst_path)
-
-
-def get_zip_dataset(dataset_name):
-    dataset_path = join(
-        datasets_path, dataset_name)
-    dataset_zip_path = '{}.zip'.format(dataset_name)
-
-    if not isdir(dataset_path):
-        _makedirs(dataset_path)
-
-        print('Downloading {}...'.format(dataset_zip_path))
-        download_dataset(dataset_zip_path)
-
-        zip_path = join(
-            datasets_path, dataset_zip_path)
-        dataset_path_parent = dirname(dataset_path)
-        cmd = ['unzip', zip_path, '-d', dataset_path_parent]
-        call(cmd)
-
-
 class Logger(object):
     """Used to log stdout to a file and to the console."""
 
@@ -197,6 +173,12 @@ class Logger(object):
 
     def flush(self):
         pass
+
+
+def save_json(a_dict, path):
+    json_str = json.dumps(a_dict, sort_keys=True, indent=4)
+    with open(path, 'w') as json_file:
+        json_file.write(json_str)
 
 
 def setup_run(run_path, options, sync_results):
@@ -215,9 +197,18 @@ def setup_run(run_path, options, sync_results):
 
     _makedirs(run_path)
 
-    options_json = json.dumps(options.__dict__, sort_keys=True, indent=4)
     options_path = join(run_path, 'options.json')
-    with open(options_path, 'w') as options_file:
-        options_file.write(options_json)
+    save_json(options.__dict__, options_path)
 
     return run_path
+
+
+def plot_img_row(fig, grid_spec, row_ind, imgs):
+    for col_ind, img in enumerate(imgs):
+        a = fig.add_subplot(grid_spec[row_ind, col_ind])
+        a.axes.get_xaxis().set_visible(False)
+        a.axes.get_yaxis().set_visible(False)
+        if img.ndim == 2:
+            a.imshow(img, cmap='gray', vmin=0., vmax=1.0)
+        else:
+            a.imshow(img)
