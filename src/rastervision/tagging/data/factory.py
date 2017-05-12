@@ -5,15 +5,15 @@ from rastervision.common.utils import _makedirs
 from rastervision.common.settings import (
     datasets_path, results_path, TRAIN, VALIDATION)
 
-from .planet_kaggle import PLANET_KAGGLE, TIFF, PlanetKaggleTiffGenerator
-from .utils import plot_sample
+from .planet_kaggle import PLANET_KAGGLE, TIFF, PlanetKaggleTiffFileGenerator
 
 
 def get_data_generator(options):
     if options.dataset_name == PLANET_KAGGLE:
         if options.generator_name == TIFF:
-            return PlanetKaggleTiffGenerator(
-                datasets_path, options.active_input_inds, options.train_ratio)
+            return PlanetKaggleTiffFileGenerator(
+                datasets_path, options.active_input_inds, options.train_ratio,
+                options.cross_validation)
         else:
             raise ValueError('{} is not a valid generator'.format(
                 options.generator_name))
@@ -32,6 +32,7 @@ def plot_generator(dataset_name, generator_name, split):
             self.generator_name = generator_name
             self.active_input_inds = [0, 1, 2, 3]
             self.train_ratio = 0.8
+            self.cross_validation = None
 
     options = Options()
     generator = get_data_generator(options)
@@ -49,13 +50,15 @@ def plot_generator(dataset_name, generator_name, split):
         for sample_ind in range(batch_size):
             file_path = join(
                 viz_path, '{}_{}.pdf'.format(batch_ind, sample_ind))
-            plot_sample(
-                file_path, batch.all_x[sample_ind, :, :, :],
-                batch.y[sample_ind, :], generator)
+            generator.plot_sample(
+                file_path,
+                batch.all_x[sample_ind, :],
+                batch.y[sample_ind, :],
+                batch.file_inds[sample_ind])
 
 
 def preprocess():
-    PlanetKaggleTiffGenerator.preprocess(datasets_path)
+    PlanetKaggleTiffFileGenerator.preprocess(datasets_path)
 
 
 def plot_generators():

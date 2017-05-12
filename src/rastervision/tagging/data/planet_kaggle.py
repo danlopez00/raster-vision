@@ -1,12 +1,18 @@
-from os.path import join, basename, splitext
+from os.path import join, basename, splitext, isdir, dirname
 import csv
 import glob
+from subprocess import call
 
 import numpy as np
+import matplotlib as mpl
+# For headless environments
+mpl.use('Agg') # NOQA
+import matplotlib.pyplot as plt
 
-from rastervision.common.utils import save_json, load_img, compute_ndvi
-from rastervision.common.settings import TRAIN, VALIDATION
+from rastervision.common.utils import (
+    save_json, compute_ndvi, plot_img_row, _makedirs, s3_cp)
 from rastervision.common.generators import FileGenerator, Batch
+from rastervision.common.settings import datasets_path, s3_datasets_path
 
 PLANET_KAGGLE = 'planet_kaggle'
 TIFF = 'tiff'
@@ -57,11 +63,10 @@ class Dataset():
         self.red_ind = 0
         self.green_ind = 1
         self.blue_ind = 2
+        self.rgb_inds = [self.red_ind, self.green_ind, self.blue_ind]
         self.ir_ind = 3
         self.ndvi_ind = 4
         self.nb_channels = 5
-
-        self.rgb_inds = [self.red_ind, self.green_ind, self.blue_ind]
 
     def augment_channels(self, batch_x):
         red = batch_x[:, :, :, [self.red_ind]]
@@ -90,15 +95,15 @@ class TagStore():
     def strs_to_binary(self, str_tags):
         binary_tags = np.zeros((self.dataset.nb_tags,))
         for str_tag in str_tags:
-            ind = self.tag_to_ind[str_tag]
+            ind = self.dataset.tag_to_ind[str_tag]
             binary_tags[ind] = 1
         return binary_tags
 
     def binary_to_strs(self, binary_tags):
         str_tags = []
-        for tag_ind in self.dataset.nb_tags:
+        for tag_ind in range(self.dataset.nb_tags):
             if binary_tags[tag_ind] == 1:
-                str_tags.apppend(self.dataset.all_tags[tag_ind])
+                str_tags.append(self.dataset.all_tags[tag_ind])
         return str_tags
 
     def get_tags(self, file_inds):
@@ -144,18 +149,79 @@ class PlanetKaggleTiffFileGenerator(PlanetKaggleFileGenerator):
         self.dev_path = join(self.dataset_path, DEV_DIR)
         self.test_path = join(self.dataset_path, TEST_DIR)
 
-        self.dev_file_inds = self.get_file_inds(self.dev_path)
-        self.test_file_inds = self.get_file_inds(self.test_path)
+        self.dev_file_inds = self.generate_file_inds(self.dev_path)
+        self.test_file_inds = self.generate_file_inds(self.test_path)
 
         super().__init__(active_input_inds, train_ratio, cross_validation)
 
-    def get_file_inds(self, path):
+    def download_dataset(self):
+        # TODO
+        dataset_path = join(
+            datasets_path, dataset_name)
+        dataset_zip_path = '{}.zip'.format(dataset_name)
+
+        if not isdir(dataset_path):
+            _makedirs(dataset_path)
+
+            print('Downloading {}...'.format(dataset_zip_path))
+            src_path = join(s3_datasets_path, dataset_zip_path)
+            dst_path = join(datasets_path, dataset_zip_path)
+            s3_cp(src_path, dst_path)
+
+            zip_path = join(
+                datasets_path, dataset_zip_path)
+            dataset_path_parent = dirname(dataset_path)
+            cmd = ['unzip', zip_path, '-d', dataset_path_parent]
+            call(cmd)
+
+    def generate_file_inds(self, path):
         paths = glob.glob(join(path, '*.tif'))
         file_inds = []
         for path in paths:
             file_ind = splitext(basename(path))[0]
             file_inds.append(file_ind)
         return file_inds
+
+    def display_scale(self, x):
+        # TODO do this in a better way following the kaggle jupiter notebook
+        x = np.copy(x)
+        rgbir_x = x[:, :, 0:4]
+        ndvi_x = x[:, :, 4]
+        uint16_max = float(np.iinfo(np.uint16).max)
+
+        rgbir_x /= uint16_max
+        rgbir_x *= 3
+
+        ndvi_x += 1.0
+        ndvi_x /= 2
+
+        return x
+
+    def plot_sample(self, file_path, x, y, file_ind):
+        fig = plt.figure()
+        nb_cols = self.dataset.nb_channels + 1
+        grid_spec = mpl.gridspec.GridSpec(1, nb_cols)
+
+        # Plot x channels
+        x = self.unnormalize(x)
+        x = self.display_scale(x)
+        rgb_x = x[:, :, self.dataset.rgb_inds]
+        imgs = [rgb_x]
+        nb_channels = x.shape[2]
+        for channel_ind in range(nb_channels):
+            img = x[:, :, channel_ind]
+            imgs.append(img)
+        row_ind = 0
+        plot_img_row(fig, grid_spec, row_ind, imgs)
+
+        # Print y tags
+        tag_strs = self.tag_store.binary_to_strs(y)
+        tag_strs = ', '.join(tag_strs)
+        title = 'file_ind:{} tags: {}'.format(file_ind, tag_strs)
+        fig.suptitle(title)
+
+        plt.savefig(file_path, bbox_inches='tight', format='pdf', dpi=600)
+        plt.close(fig)
 
     def get_file_path(self, file_ind):
         split, _ = file_ind.split('_')
@@ -166,12 +232,16 @@ class PlanetKaggleTiffFileGenerator(PlanetKaggleFileGenerator):
     def get_file_size(self, file_ind):
         return 256, 256
 
+    def load_img(self, file_path, window):
+        import rasterio
+        with rasterio.open(file_path) as src:
+            b, g, r, nir = src.read(window=window)
+            img = np.dstack([r, g, b, nir])
+            return img
+
     def get_img(self, file_ind, window):
         file_path = self.get_file_path(file_ind)
-        ((row_begin, row_end), (col_begin, col_end)) = window
-
-        img = load_img(file_path, window=window)
-        img = img[row_begin:row_end, col_begin:col_end, :]
+        img = self.load_img(file_path, window)
         return img
 
     def make_batch(self, img_batch, file_inds):
